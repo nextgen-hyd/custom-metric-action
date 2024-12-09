@@ -1,8 +1,5 @@
-
-
-name: 'Run Command with Comprehensive Metrics and Logging'
-description: 'Run a command, capture detailed metrics, and save comprehensive logs'
-
+name: 'Run Command with S3 Metrics and Logging'
+description: 'Run a command, capture detailed metrics, and save comprehensive logs to S3'
 inputs:
   command:
     description: 'The command to run'
@@ -10,11 +7,23 @@ inputs:
   step-name:
     description: 'Name of the step for log file naming'
     required: true
-  log-dir:
-    description: 'Directory to save log files'
+  aws-access-key-id:
+    description: 'AWS Access Key ID for S3 logging'
+    required: true
+  aws-secret-access-key:
+    description: 'AWS Secret Access Key for S3 logging'
+    required: true
+  s3-bucket:
+    description: 'S3 Bucket name for log storage'
+    required: true
+  s3-path-prefix:
+    description: 'Optional S3 path prefix (e.g., logs/)'
     required: false
-    default: './logs'
-
+    default: 'github-action-logs/'
+  log-retention-days:
+    description: 'Number of days to retain logs'
+    required: false
+    default: '30'
 outputs:
   output:
     description: 'Full command output (stdout + stderr)'
@@ -31,25 +40,42 @@ outputs:
   duration:
     description: 'Time the command took to run, in seconds'
     value: ${{ steps.run-command.outputs.duration }}
-  log-file:
-    description: 'Path to the generated log file'
-    value: ${{ steps.run-command.outputs.log-file }}
-
+  s3-log-file:
+    description: 'S3 path to the generated log file'
+    value: ${{ steps.run-command.outputs.s3-log-file }}
 runs:
   using: 'composite'
   steps:
-    - name: Prepare Logging Directory
-      shell: bash
-      run: mkdir -p ${{ inputs.log-dir }}
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ inputs.aws-access-key-id }}
+        aws-secret-access-key: ${{ inputs.aws-secret-access-key }}
+        aws-region: ${{ env.AWS_REGION || 'us-east-1' }}
 
-    - name: Run Command with Metrics
+    - name: Prepare Temporary Logging Directory
+      shell: bash
+      run: mkdir -p /tmp/action-logs
+
+    - name: Run Command with Metrics and S3 Logging
       id: run-command
       shell: bash
+      env:
+        AWS_ACCESS_KEY_ID: ${{ inputs.aws-access-key-id }}
+        AWS_SECRET_ACCESS_KEY: ${{ inputs.aws-secret-access-key }}
       run: |
         # Sanitize step name for filename
         safe_step_name=$(echo "${{ inputs.step-name }}" | sed 's/[^a-zA-Z0-9_-]/_/g')
+        
+        # Use GitHub-provided variables for unique identification
+        build_number="${{ github.run_id }}_${{ github.run_attempt }}"
         timestamp=$(date +%Y%m%d_%H%M%S)
-        log_file="${{ inputs.log-dir }}/${safe_step_name}_${timestamp}.log"
+        
+        # Local log file path
+        local_log_file="/tmp/action-logs/${safe_step_name}_${build_number}_${timestamp}.log"
+        
+        # S3 log file path
+        s3_log_path="${{ inputs.s3-path-prefix }}${build_number}/${safe_step_name}_${timestamp}.log"
         
         # Start timing
         start_time=$(date +%s.%N)
@@ -72,6 +98,11 @@ runs:
         
         # Prepare comprehensive log
         {
+          echo "=== GITHUB WORKFLOW CONTEXT ==="
+          echo "Workflow: ${{ github.workflow }}"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "Run Attempt: ${{ github.run_attempt }}"
+          echo ""
           echo "=== COMMAND EXECUTION METRICS ==="
           echo "Step Name: ${{ inputs.step-name }}"
           echo "Timestamp: $timestamp"
@@ -84,7 +115,10 @@ runs:
           echo ""
           echo "=== STANDARD ERROR ==="
           echo "$stderr"
-        } > "$log_file"
+        } > "$local_log_file"
+        
+        # Upload to S3
+        aws s3 cp "$local_log_file" "s3://${{ inputs.s3-bucket }}/$s3_log_path"
         
         # Set outputs
         echo "output<<EOF" >> $GITHUB_OUTPUT
@@ -101,4 +135,8 @@ runs:
         
         echo "exit-code=$exit_code" >> $GITHUB_OUTPUT
         echo "duration=$duration" >> $GITHUB_OUTPUT
-        echo "log-file=$log_file" >> $GITHUB_OUTPUT
+        echo "s3-log-file=s3://${{ inputs.s3-bucket }}/$s3_log_path" >> $GITHUB_OUTPUT
+
+    - name: Cleanup Local Logs
+      shell: bash
+      run: rm -rf /tmp/action-logs
