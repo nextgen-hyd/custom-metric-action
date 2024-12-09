@@ -1,0 +1,104 @@
+
+
+name: 'Run Command with Comprehensive Metrics and Logging'
+description: 'Run a command, capture detailed metrics, and save comprehensive logs'
+
+inputs:
+  command:
+    description: 'The command to run'
+    required: true
+  step-name:
+    description: 'Name of the step for log file naming'
+    required: true
+  log-dir:
+    description: 'Directory to save log files'
+    required: false
+    default: './logs'
+
+outputs:
+  output:
+    description: 'Full command output (stdout + stderr)'
+    value: ${{ steps.run-command.outputs.output }}
+  stdout:
+    description: 'Command stdout'
+    value: ${{ steps.run-command.outputs.stdout }}
+  stderr:
+    description: 'Command stderr'
+    value: ${{ steps.run-command.outputs.stderr }}
+  exit-code:
+    description: 'Command exit code'
+    value: ${{ steps.run-command.outputs.exit-code }}
+  duration:
+    description: 'Time the command took to run, in seconds'
+    value: ${{ steps.run-command.outputs.duration }}
+  log-file:
+    description: 'Path to the generated log file'
+    value: ${{ steps.run-command.outputs.log-file }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Prepare Logging Directory
+      shell: bash
+      run: mkdir -p ${{ inputs.log-dir }}
+
+    - name: Run Command with Metrics
+      id: run-command
+      shell: bash
+      run: |
+        # Sanitize step name for filename
+        safe_step_name=$(echo "${{ inputs.step-name }}" | sed 's/[^a-zA-Z0-9_-]/_/g')
+        timestamp=$(date +%Y%m%d_%H%M%S)
+        log_file="${{ inputs.log-dir }}/${safe_step_name}_${timestamp}.log"
+        
+        # Start timing
+        start_time=$(date +%s.%N)
+        
+        # Create a temporary file to capture stderr
+        stderr_file=$(mktemp)
+        
+        # Run the command and capture all outputs
+        set +e  # Disable immediate exit on error
+        output=$(bash -c "${{ inputs.command }}" 2> >(tee "$stderr_file" >&2) 2>&1)
+        exit_code=$?
+        
+        # End timing and calculate duration
+        end_time=$(date +%s.%N)
+        duration=$(echo "scale=3; $end_time - $start_time" | bc)
+        
+        # Read stderr content
+        stderr=$(cat "$stderr_file")
+        rm "$stderr_file"
+        
+        # Prepare comprehensive log
+        {
+          echo "=== COMMAND EXECUTION METRICS ==="
+          echo "Step Name: ${{ inputs.step-name }}"
+          echo "Timestamp: $timestamp"
+          echo "Command: ${{ inputs.command }}"
+          echo "Exit Code: $exit_code"
+          echo "Duration: $duration seconds"
+          echo ""
+          echo "=== STANDARD OUTPUT ==="
+          echo "$output"
+          echo ""
+          echo "=== STANDARD ERROR ==="
+          echo "$stderr"
+        } > "$log_file"
+        
+        # Set outputs
+        echo "output<<EOF" >> $GITHUB_OUTPUT
+        echo "$output" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+        
+        echo "stdout<<EOF" >> $GITHUB_OUTPUT
+        echo "$output" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+        
+        echo "stderr<<EOF" >> $GITHUB_OUTPUT
+        echo "$stderr" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+        
+        echo "exit-code=$exit_code" >> $GITHUB_OUTPUT
+        echo "duration=$duration" >> $GITHUB_OUTPUT
+        echo "log-file=$log_file" >> $GITHUB_OUTPUT
